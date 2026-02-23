@@ -7,16 +7,51 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 
+SCENES = [
+    "office work",
+    "video editing",
+    "report writing",
+    "online courses",
+    "gaming",
+    "socializing",
+    "creative writing",
+    "entertainment",
+    "travel planning",
+    "programming and development",
+    "event planning",
+    "data analysis",
+    "education and research",
+    "career development",
+    "health and fitness",
+    "language learning",
+    "decision making",
+    "content creation",
+    "project management",
+    "personal organization",
+    "time management",
+    "personal finance",
+    "shopping",
+]
+
+
 def prepare_prompt(
     tasks: List[Dict[str, Any]],
     seed_num: int,
     rng_seed: Optional[int] = 42,
+    min_key_num: int = 10,
+    max_key_num: int = 12,
 ) -> str:
     if seed_num > len(tasks):
         raise ValueError(f"seed_num ({seed_num}) cannot exceed len(tasks) ({len(tasks)})")
     
+    if max_key_num < min_key_num:
+        raise ValueError("Invalid key number range")
+    
     rng = random.Random(rng_seed)
     seed_tasks = rng.sample(tasks, k=seed_num)
+    
+    scene = rng.choice(SCENES) if SCENES else "office work"
+    min_items = rng.randint(min_key_num, max_key_num)
 
     prompt_parts: List[str] = []
     prompt_parts.append(
@@ -25,11 +60,11 @@ def prepare_prompt(
         "- Query\n"
         "- Memories (JSON)\n"
         "- User Portrait\n\n"
-        "Goal: generate NEW samples that follow the SAME format as the seeds.\n"
-        "The new samples must be diverse and realistic, and must stay within these scenarios:\n"
-        "office work, video editing, report writing, online courses, gaming, socializing.\n\n"
+        "Goal: generate 1 NEW sample that follow the SAME format as the seeds.\n"
+        "The new samples must be diverse and realistic.\n"
+        f"SCENE (must follow): {scene}\n\n"
         "CRITICAL RULE:\n"
-        "- The 'User Portrait' MUST be inferred from the generated 'Query' and the included 'Memories (JSON)', but it MUST NOT explicitly mention, quote, or cite the query or the memories (including any keys/IDs)\n"
+        "- The 'User Portrait' MUST be inferred from the generated 'Query' and the included 'Memories (JSON)', but it MUST NOT explicitly mention, quote, or cite the query or the memories\n"
         "- Do NOT invent portrait traits that are not supported by the query/memories.\n"
         "- The string value of 'Query' and 'User Portrait' MUST be plain natural language only. They MUST NOT contain any keys/labels/field headers or JSON snippets.\n\n"
         "Diversity requirements:\n"
@@ -41,7 +76,8 @@ def prepare_prompt(
         "- Output MUST be a SINGLE JSON object (and nothing else).\n"
         "- The JSON object MUST have EXACT keys:\n"
         '   ["query", "user_portrait", "memories"]\n'
-        "  'memories' MUST be a JSON array of objects (not strings). Include at least 2 items.\n"
+        f"  'memories' MUST be a JSON array of objects (not strings). Include at least {min_items} items.\n"
+        "  'user_portrait' MUST be a natural-language paragraph, and it should reflect/cover as many of the generated memories as possible. It should be slightly longer than the seed portraits, but not too long: aim for about 8-12 sentences."
         "- The memory objects should follow the same structure as the seed memory JSON you see below.\n\n"
         "SEED EXAMPLES (each seed is separated by a delimiter for readability):\n"
     )
@@ -93,22 +129,28 @@ def extract_ltm_keys_from_memories(memories: Any) -> List[str]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Personalized Query Generation")
 
+    # Model configs
     parser.add_argument("--model", type=str, default="qwen3-max", help="Model name")
     parser.add_argument("--api_key", type=str, default="sk-e8401b009e4b4d3d97005fb731979db9", help="API key")
     parser.add_argument("--base_url", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="Base URL for the API")
 
+    # Data configs
     parser.add_argument("--data_path", type=str, default="./data/memories_and_queries.json", help="Path to load data")
     parser.add_argument("--output", type=str, default="./outputs/", help="Path to save the results")
 
+    # Sampling configs
     parser.add_argument("--max_tokens", type=int, default=32768, help="Maximum number of new tokens the model is allowed to generate per response")
     parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_p", type=float, default=0.95, help="Controls the cumulative probability of the top tokens to consider")
     parser.add_argument("--top_k", type=int, default=0, help="Controls the number of top tokens to consider")
     parser.add_argument("--dtype", type=str, default="auto", choices=["auto", "float16", "bfloat16"], help="Precision dtype")
 
+    # Generation configs
     parser.add_argument("--seed_num", type=int, default=3, help="The number of seed data")
-    parser.add_argument("--user_num", type=int, default=60, help="The number of users")
+    parser.add_argument("--user_num", type=int, default=400, help="The number of users")
     parser.add_argument("--sample_num", type=int, default=6, help="The number of new data to generate")
+    parser.add_argument("--min_key_num", type=int, default=10, help="The minimum number of ltm_keys required in the generated memories")
+    parser.add_argument("--max_key_num", type=int, default=12, help="The maximum number of ltm_keys allowed in the generated memories")
     parser.add_argument("--base_id", type=int, default=40, help="The base id to start")
     parser.add_argument("--max_retries", type=int, default=15, help="The max retries per task")
     
@@ -120,12 +162,14 @@ if __name__ == "__main__":
     if not os.path.exists(args.output):
         os.makedirs(args.output, exist_ok=True)
 
+    # Load data
     with open(args.data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     if not data:
         raise ValueError("Data file is empty or invalid")
 
+    # Initialize OpenAI client
     client = OpenAI(
         api_key=args.api_key,
         base_url=args.base_url,
@@ -199,12 +243,14 @@ if __name__ == "__main__":
                 "matched_memories": matched_memories,
             })
 
+    # Build a set of existing ltm_keys to avoid duplicates
     existing_ltm_keys = set()
     for t in all_tasks_out:
         for k in t.get("ltm_keys", []):
             if isinstance(k, str):
                 existing_ltm_keys.add(k)
 
+    # Start generation loop
     for user_id in range(args.user_num):
         new_user_id = args.base_id + user_id
 
@@ -218,9 +264,17 @@ if __name__ == "__main__":
                 if try_count >= args.max_retries:
                     print(f"Task {sample_id}: Failed after {args.max_retries} retries, skipping")
                     break
+                
+                # Prepare prompt
+                input = prepare_prompt(
+                    all_tasks_out,
+                    args.seed_num,
+                    rng_seed=(new_user_id * 1000 + sample_id * 100 + try_count),
+                    min_key_num=args.min_key_num,
+                    max_key_num=args.max_key_num,
+                )
 
-                input = prepare_prompt(all_tasks_out, args.seed_num, rng_seed=(new_user_id * 1000 + sample_id * 100 + try_count))
-
+                # Generate response
                 completion = client.chat.completions.create(
                     model=args.model,
                     messages=[
@@ -234,10 +288,12 @@ if __name__ == "__main__":
 
                 output_str = completion.choices[0].message.content
 
+                # Parse and validate output
                 try:
                     output_json = json.loads(output_str)
                 except json.JSONDecodeError:
                     try_count += 1
+                    print(f"Task {sample_id}: JSON decode error, retrying... (attempt {try_count}/{args.max_retries})")
                     continue
                     
                 if not (
@@ -247,14 +303,17 @@ if __name__ == "__main__":
                     and "memories" in output_json
                 ):
                     try_count += 1
+                    print(f"Task {sample_id}: Output JSON missing required keys, retrying... (attempt {try_count}/{args.max_retries})")
                     continue
-
+                
                 query = output_json["query"]
                 user_portrait = output_json["user_portrait"]
                 generated_memories = output_json["memories"]
                 raw_ltm_keys = extract_ltm_keys_from_memories(generated_memories)
-                if len(raw_ltm_keys) < 2:
+                if len(raw_ltm_keys) < args.min_key_num:
                     try_count += 1
+                    print(f"Task {sample_id}: Not enough ltm_keys ({len(raw_ltm_keys)} found, \
+                          minimum is {args.min_key_num}), retrying... (attempt {try_count}/{args.max_retries})")
                     continue
 
                 final_ltm_keys: List[str] = []
@@ -322,6 +381,7 @@ if __name__ == "__main__":
                 "tasks": current_user_tasks
             })
     
+    # Save results
     output_file = os.path.join(args.output, "memories_and_queries.json")
     print(f"Saving results to {output_file}...")
 

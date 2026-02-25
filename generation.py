@@ -3,6 +3,7 @@ import json
 import os
 import random
 from typing import Any, Dict, List, Optional
+from datetime import datetime
 
 from openai import OpenAI
 
@@ -32,6 +33,37 @@ SCENES = [
     "personal finance",
     "shopping",
 ]
+
+
+def atomic_write_json(path: str, obj: Any) -> None:
+    dir_name = os.path.dirname(path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
+def save_progress(
+    data: dict,
+    output_dir: str,
+    filename: str = "memories_and_queries.json"
+) -> str:
+    output_file = os.path.join(output_dir, filename)
+    atomic_write_json(output_file, data)
+    return output_file
+
+
+def get_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log(msg: str) -> None:
+    print(f"[{get_timestamp()}] {msg}")
 
 
 def prepare_prompt(
@@ -147,7 +179,7 @@ if __name__ == "__main__":
 
     # Generation configs
     parser.add_argument("--seed_num", type=int, default=3, help="The number of seed data")
-    parser.add_argument("--user_num", type=int, default=400, help="The number of users")
+    parser.add_argument("--user_num", type=int, default=500, help="The number of users")
     parser.add_argument("--sample_num", type=int, default=6, help="The number of new data to generate")
     parser.add_argument("--min_key_num", type=int, default=10, help="The minimum number of ltm_keys required in the generated memories")
     parser.add_argument("--max_key_num", type=int, default=12, help="The maximum number of ltm_keys allowed in the generated memories")
@@ -256,13 +288,13 @@ if __name__ == "__main__":
 
         current_user_tasks = []
 
-        print(f"Generating for user: {new_user_id}...")
+        log(f"Generating for user: {new_user_id}...")
 
         for sample_id in range(args.sample_num):
             try_count = 0
             while True:
                 if try_count >= args.max_retries:
-                    print(f"Task {sample_id}: Failed after {args.max_retries} retries, skipping")
+                    log(f"Task {sample_id}: Failed after {args.max_retries} retries, skipping")
                     break
                 
                 # Prepare prompt
@@ -293,7 +325,7 @@ if __name__ == "__main__":
                     output_json = json.loads(output_str)
                 except json.JSONDecodeError:
                     try_count += 1
-                    print(f"Task {sample_id}: JSON decode error, retrying... (attempt {try_count}/{args.max_retries})")
+                    log(f"Task {sample_id}: JSON decode error, retrying... (attempt {try_count}/{args.max_retries})")
                     continue
                     
                 if not (
@@ -303,7 +335,7 @@ if __name__ == "__main__":
                     and "memories" in output_json
                 ):
                     try_count += 1
-                    print(f"Task {sample_id}: Output JSON missing required keys, retrying... (attempt {try_count}/{args.max_retries})")
+                    log(f"Task {sample_id}: Output JSON missing required keys, retrying... (attempt {try_count}/{args.max_retries})")
                     continue
                 
                 query = output_json["query"]
@@ -312,8 +344,10 @@ if __name__ == "__main__":
                 raw_ltm_keys = extract_ltm_keys_from_memories(generated_memories)
                 if len(raw_ltm_keys) < args.min_key_num:
                     try_count += 1
-                    print(f"Task {sample_id}: Not enough ltm_keys ({len(raw_ltm_keys)} found, \
-                          minimum is {args.min_key_num}), retrying... (attempt {try_count}/{args.max_retries})")
+                    log(
+                        f"Task {sample_id}: Not enough ltm_keys ({len(raw_ltm_keys)} found, "
+                        f"minimum is {args.min_key_num}), retrying... (attempt {try_count}/{args.max_retries})"
+                    ) 
                     continue
 
                 final_ltm_keys: List[str] = []
@@ -372,7 +406,7 @@ if __name__ == "__main__":
                     "matched_memories": new_matched_memories
                 })
 
-                print(f"Task {sample_id}: Generated successfully")
+                log(f"Task {sample_id}: Generated successfully")
                 break
 
         if current_user_tasks:
@@ -380,10 +414,10 @@ if __name__ == "__main__":
                 "user_id": new_user_id,
                 "tasks": current_user_tasks
             })
+
+        output_file = save_progress(data, args.output)
+        log(f"User {new_user_id} finished. Progress saved to {output_file}")
     
     # Save results
-    output_file = os.path.join(args.output, "memories_and_queries.json")
-    print(f"Saving results to {output_file}...")
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    output_file = save_progress(data, args.output)
+    log(f"Saving results to {output_file}")

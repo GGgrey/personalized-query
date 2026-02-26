@@ -183,8 +183,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample_num", type=int, default=6, help="The number of new data to generate")
     parser.add_argument("--min_key_num", type=int, default=10, help="The minimum number of ltm_keys required in the generated memories")
     parser.add_argument("--max_key_num", type=int, default=12, help="The maximum number of ltm_keys allowed in the generated memories")
-    parser.add_argument("--base_id", type=int, default=40, help="The base id to start")
-    parser.add_argument("--max_retries", type=int, default=15, help="The max retries per task")
+    parser.add_argument("--base_id", type=int, default=96, help="The base id to start")
+    parser.add_argument("--max_retries", type=int, default=50, help="The max retries per task")
     
     args = parser.parse_args()
 
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         current_user_tasks = []
 
         log(f"Generating for user: {new_user_id}...")
-
+        
         for sample_id in range(args.sample_num):
             try_count = 0
             while True:
@@ -306,26 +306,32 @@ if __name__ == "__main__":
                     max_key_num=args.max_key_num,
                 )
 
-                # Generate response
-                completion = client.chat.completions.create(
-                    model=args.model,
-                    messages=[
-                        {"role": "user", "content": input},
-                    ],
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    max_tokens=args.max_tokens,
-                    response_format={"type": "json_object"}
-                )
+                # Generate
+                try:
+                    completion = client.chat.completions.create(
+                        model=args.model,
+                        messages=[
+                            {"role": "user", "content": input},
+                        ],
+                        temperature=args.temperature,
+                        top_p=args.top_p,
+                        max_tokens=args.max_tokens,
+                        response_format={"type": "json_object"}
+                    )
 
-                output_str = completion.choices[0].message.content
+                    output_str = completion.choices[0].message.content
+
+                except Exception as e:
+                    try_count += 1
+                    log(f"Task {sample_id}: Generate failed, retrying... (attempt {try_count}/{args.max_retries})")
+                    continue
 
                 # Parse and validate output
                 try:
                     output_json = json.loads(output_str)
-                except json.JSONDecodeError:
+                except Exception as e:
                     try_count += 1
-                    log(f"Task {sample_id}: JSON decode error, retrying... (attempt {try_count}/{args.max_retries})")
+                    log(f"Task {sample_id}: Parse failed, retrying... (attempt {try_count}/{args.max_retries})")
                     continue
                     
                 if not (
